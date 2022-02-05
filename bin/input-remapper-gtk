@@ -1,0 +1,88 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+# input-remapper - GUI for device specific keyboard mappings
+# Copyright (C) 2022 sezanzeb <proxima@sezanzeb.de>
+#
+# This file is part of input-remapper.
+#
+# input-remapper is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# input-remapper is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with input-remapper.  If not, see <https://www.gnu.org/licenses/>.
+
+
+"""Starts the user interface."""
+
+
+import sys
+import atexit
+import gettext
+import locale
+from inputremapper.configs.data import get_data_path
+import os.path
+from argparse import ArgumentParser
+
+import gi
+gi.require_version('Gtk', '3.0')
+gi.require_version('GLib', '2.0')
+gi.require_version('GtkSource', '4')
+from gi.repository import Gtk
+
+APP_NAME = 'input-remapper'
+LOCALE_DIR = os.path.join(get_data_path(), 'lang')
+
+locale.bindtextdomain(APP_NAME, LOCALE_DIR)
+locale.textdomain(APP_NAME)
+
+translate = gettext.translation(APP_NAME, LOCALE_DIR, fallback=True)
+_ = translate.gettext
+
+
+# https://github.com/Nuitka/Nuitka/issues/607#issuecomment-650217096
+Gtk.init()
+
+from inputremapper.logger import logger, update_verbosity, log_info
+from inputremapper.configs.migrations import migrate
+
+
+if __name__ == '__main__':
+    parser = ArgumentParser()
+    parser.add_argument(
+        '-d', '--debug', action='store_true', dest='debug',
+        help=_('Displays additional debug information'),
+        default=False
+    )
+
+    options = parser.parse_args(sys.argv[1:])
+    update_verbosity(options.debug)
+    log_info('input-remapper-gtk')
+    logger.debug('Using locale directory: {}'.format(LOCALE_DIR))
+
+    # import input-remapper stuff after setting the log verbosity
+    from inputremapper.gui.user_interface import UserInterface
+    from inputremapper.daemon import Daemon
+    from inputremapper.configs.global_config import global_config
+
+    migrate()
+    global_config.load_config()
+
+    user_interface = UserInterface()
+
+    def stop():
+        if isinstance(user_interface.dbus, Daemon):
+            # have fun debugging completely unrelated tests if you remove this
+            user_interface.dbus.stop_all()
+
+        user_interface.on_close()
+
+    atexit.register(stop)
+
+    Gtk.main()

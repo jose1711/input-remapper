@@ -1,29 +1,43 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
-# key-mapper - GUI for device specific keyboard mappings
-# Copyright (C) 2021 sezanzeb <proxima@sezanzeb.de>
+# input-remapper - GUI for device specific keyboard mappings
+# Copyright (C) 2022 sezanzeb <proxima@sezanzeb.de>
 #
-# This file is part of key-mapper.
+# This file is part of input-remapper.
 #
-# key-mapper is free software: you can redistribute it and/or modify
+# input-remapper is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# key-mapper is distributed in the hope that it will be useful,
+# input-remapper is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with key-mapper.  If not, see <https://www.gnu.org/licenses/>.
+# along with input-remapper.  If not, see <https://www.gnu.org/licenses/>.
 
 
-"""Sets up key-mapper for the tests and runs them."""
-
-
+"""Sets up inputremapper for the tests and runs them."""
 import os
 import sys
+import tempfile
+
+# the working directory should be the project root
+assert not os.getcwd().endswith("tests")
+assert not os.getcwd().endswith("unit")
+assert not os.getcwd().endswith("integration")
+
+# make sure the "tests" module visible
+sys.path.append(os.getcwd())
+if __name__ == "__main__":
+    # import this file to itself to make sure is not run twice and all global variables end up in sys.modules
+    # https://stackoverflow.com/questions/13181559/importing-modules-main-vs-import-as-module
+    import tests.test
+
+    tests.test.main()
+
 import shutil
 import time
 import copy
@@ -32,29 +46,32 @@ import subprocess
 import multiprocessing
 import asyncio
 import psutil
+import logging
 from pickle import UnpicklingError
 from unittest.mock import patch
 
 import evdev
 import gi
-gi.require_version('Gtk', '3.0')
-gi.require_version('GLib', '2.0')
 
+gi.require_version("Gtk", "3.0")
+gi.require_version("GLib", "2.0")
+gi.require_version("GtkSource", "4")
 
-assert not os.getcwd().endswith('tests')
+from tests.xmodmap import xmodmap
 
+os.environ["UNITTEST"] = "1"
 
-os.environ['UNITTEST'] = '1'
-
-
-def grey_log(*msgs):
-    print(f'\033[90m{" ".join(msgs)}\033[0m')
+logger = logging.getLogger("input-remapper-test")
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("\033[90mTest: %(message)s\033[0m"))
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 
 def is_service_running():
     """Check if the daemon is running."""
     try:
-        subprocess.check_output(['pgrep', '-f', 'key-mapper-service'])
+        subprocess.check_output(["pgrep", "-f", "input-remapper-service"])
         return True
     except subprocess.CalledProcessError:
         return False
@@ -67,11 +84,11 @@ def join_children():
     i = 0
     time.sleep(EVENT_READ_TIMEOUT)
     children = this.children(recursive=True)
-    while len([c for c in children if c.status() != 'zombie']) > 0:
+    while len([c for c in children if c.status() != "zombie"]) > 0:
         for child in children:
             if i > 10:
                 child.kill()
-                grey_log(f'Killed pid {child.pid} because it didn\'t finish in time')
+                logger.info("Killed pid %s because it didn't finish in time", child.pid)
 
         children = this.children(recursive=True)
         time.sleep(EVENT_READ_TIMEOUT)
@@ -80,11 +97,8 @@ def join_children():
 
 if is_service_running():
     # let tests control daemon existance
-    raise Exception('Expected the service not to be running already.')
+    raise Exception("Expected the service not to be running already.")
 
-
-# make sure the "tests" module visible
-sys.path.append(os.getcwd())
 
 # give tests some time to test stuff while the process
 # is still running
@@ -96,19 +110,18 @@ EVENT_READ_TIMEOUT = 0.01
 START_READING_DELAY = 0.05
 
 # for joysticks
-MIN_ABS = -2 ** 15
-MAX_ABS = 2 ** 15
+MIN_ABS = -(2**15)
+MAX_ABS = 2**15
 
+# When it gets garbage collected it cleans up the temporary directory so it needs to
+# stay reachable while the tests are ran.
+temporary_directory = tempfile.TemporaryDirectory(prefix="input-remapper-test")
+tmp = temporary_directory.name
 
-tmp = '/tmp/key-mapper-test'
 uinput_write_history = []
 # for tests that makes the injector create its processes
 uinput_write_history_pipe = multiprocessing.Pipe()
 pending_events = {}
-
-
-if os.path.exists(tmp):
-    shutil.rmtree(tmp)
 
 
 def read_write_history_pipe():
@@ -120,78 +133,71 @@ def read_write_history_pipe():
     return history
 
 
-# key-mapper is only interested in devices that have EV_KEY, add some
+# input-remapper is only interested in devices that have EV_KEY, add some
 # random other stuff to test that they are ignored.
-phys_foo = 'usb-0000:03:00.0-1/input2'
+phys_foo = "usb-0000:03:00.0-1/input2"
 info_foo = evdev.device.DeviceInfo(1, 1, 1, 1)
 
 keyboard_keys = sorted(evdev.ecodes.keys.keys())[:255]
 
 fixtures = {
-    '/dev/input/event1': {
-        'capabilities': {
-            evdev.ecodes.EV_KEY: [
-                evdev.ecodes.KEY_A
-            ],
+    "/dev/input/event1": {
+        "capabilities": {
+            evdev.ecodes.EV_KEY: [evdev.ecodes.KEY_A],
         },
-        'phys': 'usb-0000:03:00.0-0/input1',
-        'info': info_foo,
-        'name': 'Foo Device'
+        "phys": "usb-0000:03:00.0-0/input1",
+        "info": info_foo,
+        "name": "Foo Device",
     },
-    
     # Another "Foo Device", which will get an incremented key.
     # If possible write tests using this one, because name != key here and
     # that would be important to test as well. Otherwise the tests can't
     # see if the groups correct attribute is used in functions and paths.
-    '/dev/input/event11': {
-        'capabilities': {
-            evdev.ecodes.EV_KEY: [
-                evdev.ecodes.BTN_LEFT
-            ],
+    "/dev/input/event11": {
+        "capabilities": {
+            evdev.ecodes.EV_KEY: [evdev.ecodes.BTN_LEFT],
             evdev.ecodes.EV_REL: [
                 evdev.ecodes.REL_X,
                 evdev.ecodes.REL_Y,
                 evdev.ecodes.REL_WHEEL,
-                evdev.ecodes.REL_HWHEEL
-            ]
+                evdev.ecodes.REL_HWHEEL,
+            ],
         },
-        'phys': f'{phys_foo}/input2',
-        'info': info_foo,
-        'name': 'Foo Device foo',
-        'group_key': 'Foo Device 2'  # expected key
+        "phys": f"{phys_foo}/input2",
+        "info": info_foo,
+        "name": "Foo Device foo",
+        "group_key": "Foo Device 2",  # expected key
     },
-    '/dev/input/event10': {
-        'capabilities': {evdev.ecodes.EV_KEY: keyboard_keys},
-        'phys': f'{phys_foo}/input3',
-        'info': info_foo,
-        'name': 'Foo Device',
-        'group_key': 'Foo Device 2'
+    "/dev/input/event10": {
+        "capabilities": {evdev.ecodes.EV_KEY: keyboard_keys},
+        "phys": f"{phys_foo}/input3",
+        "info": info_foo,
+        "name": "Foo Device",
+        "group_key": "Foo Device 2",
     },
-    '/dev/input/event13': {
-        'capabilities': {evdev.ecodes.EV_KEY: [], evdev.ecodes.EV_SYN: []},
-        'phys': f'{phys_foo}/input1',
-        'info': info_foo,
-        'name': 'Foo Device',
-        'group_key': 'Foo Device 2'
+    "/dev/input/event13": {
+        "capabilities": {evdev.ecodes.EV_KEY: [], evdev.ecodes.EV_SYN: []},
+        "phys": f"{phys_foo}/input1",
+        "info": info_foo,
+        "name": "Foo Device",
+        "group_key": "Foo Device 2",
     },
-    '/dev/input/event14': {
-        'capabilities': {evdev.ecodes.EV_SYN: []},
-        'phys': f'{phys_foo}/input0',
-        'info': info_foo,
-        'name': 'Foo Device qux',
-        'group_key': 'Foo Device 2'
+    "/dev/input/event14": {
+        "capabilities": {evdev.ecodes.EV_SYN: []},
+        "phys": f"{phys_foo}/input0",
+        "info": info_foo,
+        "name": "Foo Device qux",
+        "group_key": "Foo Device 2",
     },
-
     # Bar Device
-    '/dev/input/event20': {
-        'capabilities': {evdev.ecodes.EV_KEY: keyboard_keys},
-        'phys': 'usb-0000:03:00.0-2/input1',
-        'info': evdev.device.DeviceInfo(2, 1, 2, 1),
-        'name': 'Bar Device'
+    "/dev/input/event20": {
+        "capabilities": {evdev.ecodes.EV_KEY: keyboard_keys},
+        "phys": "usb-0000:03:00.0-2/input1",
+        "info": evdev.device.DeviceInfo(2, 1, 2, 1),
+        "name": "Bar Device",
     },
-
-    '/dev/input/event30': {
-        'capabilities': {
+    "/dev/input/event30": {
+        "capabilities": {
             evdev.ecodes.EV_SYN: [],
             evdev.ecodes.EV_ABS: [
                 evdev.ecodes.ABS_X,
@@ -200,40 +206,35 @@ fixtures = {
                 evdev.ecodes.ABS_RY,
                 evdev.ecodes.ABS_Z,
                 evdev.ecodes.ABS_RZ,
-                evdev.ecodes.ABS_HAT0X
+                evdev.ecodes.ABS_HAT0X,
             ],
-            evdev.ecodes.EV_KEY: [
-                evdev.ecodes.BTN_A
-            ]
+            evdev.ecodes.EV_KEY: [evdev.ecodes.BTN_A],
         },
-        'phys': '',  # this is empty sometimes
-        'info': evdev.device.DeviceInfo(3, 1, 3, 1),
-        'name': 'gamepad'
+        "phys": "",  # this is empty sometimes
+        "info": evdev.device.DeviceInfo(3, 1, 3, 1),
+        "name": "gamepad",
     },
-
     # device that is completely ignored
-    '/dev/input/event31': {
-        'capabilities': {evdev.ecodes.EV_SYN: []},
-        'phys': 'usb-0000:03:00.0-4/input1',
-        'info': evdev.device.DeviceInfo(4, 1, 4, 1),
-        'name': 'Power Button'
+    "/dev/input/event31": {
+        "capabilities": {evdev.ecodes.EV_SYN: []},
+        "phys": "usb-0000:03:00.0-4/input1",
+        "info": evdev.device.DeviceInfo(4, 1, 4, 1),
+        "name": "Power Button",
     },
-
-    # key-mapper devices are not displayed in the ui, some instance
-    # of key-mapper started injecting apparently.
-    '/dev/input/event40': {
-        'capabilities': {evdev.ecodes.EV_KEY: keyboard_keys},
-        'phys': 'key-mapper/input1',
-        'info': evdev.device.DeviceInfo(5, 1, 5, 1),
-        'name': 'key-mapper Bar Device'
+    # input-remapper devices are not displayed in the ui, some instance
+    # of input-remapper started injecting apparently.
+    "/dev/input/event40": {
+        "capabilities": {evdev.ecodes.EV_KEY: keyboard_keys},
+        "phys": "input-remapper/input1",
+        "info": evdev.device.DeviceInfo(5, 1, 5, 1),
+        "name": "input-remapper Bar Device",
     },
-
     # denylisted
-    '/dev/input/event51': {
-        'capabilities': {evdev.ecodes.EV_KEY: keyboard_keys},
-        'phys': 'usb-0000:03:00.0-5/input1',
-        'info': evdev.device.DeviceInfo(6, 1, 6, 1),
-        'name': 'YuBiCofooYuBiKeYbar'
+    "/dev/input/event51": {
+        "capabilities": {evdev.ecodes.EV_KEY: keyboard_keys},
+        "phys": "usb-0000:03:00.0-5/input1",
+        "info": evdev.device.DeviceInfo(6, 1, 6, 1),
+        "name": "YuBiCofooYuBiKeYbar",
     },
 }
 
@@ -249,8 +250,8 @@ def setup_pipe(group_key):
 # make sure those pipes exist before any process (the helper) gets forked,
 # so that events can be pushed after the fork.
 for fixture in fixtures.values():
-    if 'group_key' in fixture:
-        setup_pipe(fixture['group_key'])
+    if "group_key" in fixture:
+        setup_pipe(fixture["group_key"])
 
 
 def get_events():
@@ -287,13 +288,14 @@ def new_event(type, code, value, timestamp=None, offset=0):
 
     sec = int(timestamp)
     usec = timestamp % 1 * 1000000
-    event = evdev.InputEvent(sec, usec, type, code, value)
+    event = InputEvent(sec, usec, type, code, value)
     return event
 
 
 def patch_paths():
-    from keymapper import paths
-    paths.CONFIG_PATH = '/tmp/key-mapper-test'
+    from inputremapper.configs import paths
+
+    paths.CONFIG_PATH = tmp
 
 
 class InputDevice:
@@ -302,18 +304,18 @@ class InputDevice:
     path = None
 
     def __init__(self, path):
-        if path != 'justdoit' and path not in fixtures:
+        if path != "justdoit" and path not in fixtures:
             raise FileNotFoundError()
 
         self.path = path
         fixture = fixtures.get(path, {})
-        self.phys = fixture.get('phys', 'unset')
-        self.info = fixture.get('info', evdev.device.DeviceInfo(None, None, None, None))
-        self.name = fixture.get('name', 'unset')
+        self.phys = fixture.get("phys", "unset")
+        self.info = fixture.get("info", evdev.device.DeviceInfo(None, None, None, None))
+        self.name = fixture.get("name", "unset")
 
         # this property exists only for test purposes and is not part of
         # the original evdev.InputDevice class
-        self.group_key = fixture.get('group_key', self.name)
+        self.group_key = fixture.get("group_key", self.name)
 
         # ensure a pipe exists to make this object act like
         # it is reading events from a device
@@ -321,31 +323,34 @@ class InputDevice:
 
         self.fd = pending_events[self.group_key][1].fileno()
 
+    def push_events(self, events):
+        push_events(self.group_key, events)
+
     def fileno(self):
         """Compatibility to select.select."""
         return self.fd
 
     def log(self, key, msg):
-        grey_log(f'{msg} "{self.name}" "{self.path}" {key}')
+        logger.info(f'%s "%s" "%s" %s', msg, self.name, self.path, key)
 
     def absinfo(self, *args):
-        raise Exception('Ubuntus version of evdev doesn\'t support .absinfo')
+        raise Exception("Ubuntus version of evdev doesn't support .absinfo")
 
     def grab(self):
-        grey_log('grab', self.name, self.path)
+        logger.info("grab %s %s", self.name, self.path)
 
     def ungrab(self):
-        grey_log('ungrab', self.name, self.path)
+        logger.info("ungrab %s %s", self.name, self.path)
 
     async def async_read_loop(self):
         if pending_events.get(self.group_key) is None:
-            self.log('no events to read', self.group_key)
+            self.log("no events to read", self.group_key)
             return
 
         # consume all of them
         while pending_events[self.group_key][1].poll():
             result = pending_events[self.group_key][1].recv()
-            self.log(result, 'async_read_loop')
+            self.log(result, "async_read_loop")
             yield result
             await asyncio.sleep(0.01)
 
@@ -358,13 +363,13 @@ class InputDevice:
         # To be realistic it would have to check if the provided
         # element is in its capabilities.
         if self.group_key not in pending_events:
-            self.log('no events to read', self.group_key)
+            self.log("no events to read", self.group_key)
             return
 
         # consume all of them
         while pending_events[self.group_key][1].poll():
             event = pending_events[self.group_key][1].recv()
-            self.log(event, 'read')
+            self.log(event, "read")
             yield event
             time.sleep(EVENT_READ_TIMEOUT)
 
@@ -373,7 +378,7 @@ class InputDevice:
         while True:
             event = pending_events[self.group_key][1].recv()
             if event is not None:
-                self.log(event, 'read_loop')
+                self.log(event, "read_loop")
                 yield event
             time.sleep(EVENT_READ_TIMEOUT)
 
@@ -392,16 +397,20 @@ class InputDevice:
             # failed in tests sometimes
             return None
 
-        self.log(event, 'read_one')
+        self.log(event, "read_one")
         return event
 
     def capabilities(self, absinfo=True, verbose=False):
-        result = copy.deepcopy(fixtures[self.path]['capabilities'])
+        result = copy.deepcopy(fixtures[self.path]["capabilities"])
 
         if absinfo and evdev.ecodes.EV_ABS in result:
             absinfo_obj = evdev.AbsInfo(
-                value=None, min=MIN_ABS, fuzz=None, flat=None,
-                resolution=None, max=MAX_ABS
+                value=None,
+                min=MIN_ABS,
+                fuzz=None,
+                flat=None,
+                resolution=None,
+                max=MAX_ABS,
             )
             result[evdev.ecodes.EV_ABS] = [
                 (stuff, absinfo_obj) for stuff in result[evdev.ecodes.EV_ABS]
@@ -414,10 +423,10 @@ uinputs = {}
 
 
 class UInput:
-    def __init__(self, events=None, name='unnamed', *args, **kwargs):
+    def __init__(self, events=None, name="unnamed", *args, **kwargs):
         self.fd = 0
         self.write_count = 0
-        self.device = InputDevice('justdoit')
+        self.device = InputDevice("justdoit")
         self.name = name
         self.events = events
         self.write_history = []
@@ -434,7 +443,7 @@ class UInput:
         uinput_write_history.append(event)
         uinput_write_history_pipe[1].send(event)
         self.write_history.append(event)
-        grey_log(f'{(type, code, value)} written')
+        logger.info("%s written", (type, code, value))
 
     def syn(self):
         pass
@@ -446,13 +455,7 @@ class InputEvent(evdev.InputEvent):
         super().__init__(sec, usec, type, code, value)
 
     def copy(self):
-        return InputEvent(
-            self.sec,
-            self.usec,
-            self.type,
-            self.code,
-            self.value
-        )
+        return InputEvent(self.sec, self.usec, self.type, self.code, self.value)
 
 
 def patch_evdev():
@@ -468,7 +471,7 @@ def patch_evdev():
 def patch_events():
     # improve logging of stuff
     evdev.InputEvent.__str__ = lambda self: (
-        f'InputEvent{(self.type, self.code, self.value)}'
+        f"InputEvent{(self.type, self.code, self.value)}"
     )
 
 
@@ -477,14 +480,30 @@ def patch_os_system():
     original_system = os.system
 
     def system(command):
-        if 'pkexec' in command:
+        if "pkexec" in command:
             # because it
             # - will open a window for user input
             # - has no knowledge of the fixtures and patches
-            raise Exception('Write patches to avoid running pkexec stuff')
+            raise Exception("Write patches to avoid running pkexec stuff")
         return original_system(command)
 
     os.system = system
+
+
+def patch_check_output():
+    """xmodmap -pke should always return a fixed set of symbols.
+
+    On some installations the `xmodmap` command might be missig completely,
+    which would break the tests.
+    """
+    original_check_output = subprocess.check_output
+
+    def check_output(command, *args, **kwargs):
+        if "xmodmap" in command and "-pke" in command:
+            return xmodmap
+        return original_check_output(command, *args, **kwargs)
+
+    subprocess.check_output = check_output
 
 
 def clear_write_history():
@@ -501,19 +520,22 @@ patch_paths()
 patch_evdev()
 patch_events()
 patch_os_system()
+patch_check_output()
 
-from keymapper.logger import update_verbosity
+from inputremapper.logger import update_verbosity
 
 update_verbosity(True)
 
-from keymapper.injection.injector import Injector
-from keymapper.config import config
-from keymapper.gui.reader import reader
-from keymapper.groups import groups
-from keymapper.state import system_mapping, custom_mapping
-from keymapper.paths import get_config_path
-from keymapper.injection.macros import macro_variables
-from keymapper.injection.keycode_mapper import active_macros, unreleased
+from inputremapper.injection.injector import Injector
+from inputremapper.configs.global_config import global_config
+from inputremapper.gui.reader import reader
+from inputremapper.groups import groups
+from inputremapper.configs.system_mapping import system_mapping
+from inputremapper.gui.active_preset import active_preset
+from inputremapper.configs.paths import get_config_path
+from inputremapper.injection.macros.macro import macro_variables
+from inputremapper.injection.consumers.keycode_mapper import active_macros, unreleased
+from inputremapper.injection.global_uinputs import global_uinputs
 
 # no need for a high number in tests
 Injector.regrab_timeout = 0.05
@@ -525,19 +547,18 @@ environ_copy = copy.deepcopy(os.environ)
 
 def send_event_to_reader(event):
     """Act like the helper and send input events to the reader."""
-    reader._results._unread.append({
-        'type': 'event',
-        'message': (
-            event.sec, event.usec,
-            event.type, event.code, event.value
-        )
-    })
+    reader._results._unread.append(
+        {
+            "type": "event",
+            "message": (event.sec, event.usec, event.type, event.code, event.value),
+        }
+    )
 
 
 def quick_cleanup(log=True):
     """Reset the applications state."""
     if log:
-        print('quick cleanup')
+        print("quick cleanup")
 
     for device in list(pending_events.keys()):
         try:
@@ -555,30 +576,39 @@ def quick_cleanup(log=True):
     except (BrokenPipeError, OSError):
         pass
 
-    if asyncio.get_event_loop().is_running():
-        for task in asyncio.all_tasks():
-            task.cancel()
+    try:
+        if asyncio.get_event_loop().is_running():
+            for task in asyncio.all_tasks():
+                task.cancel()
+    except RuntimeError:
+        # happens when the event loop disappears for magical reasons
+        # create a fresh event loop
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
-    if not macro_variables.process.is_alive():
-        raise AssertionError('the SharedDict manager is not running anymore')
+    if macro_variables.process is not None and not macro_variables.process.is_alive():
+        # nothing should stop the process during runtime, if it has been started by
+        # the injector once
+        raise AssertionError("the SharedDict manager is not running anymore")
 
-    macro_variables._stop()
+    if macro_variables.process is not None:
+        macro_variables._stop()
 
     join_children()
 
-    macro_variables._start()
+    macro_variables.start()
 
     if os.path.exists(tmp):
         shutil.rmtree(tmp)
 
-    config.path = os.path.join(get_config_path(), 'config.json')
-    config.clear_config()
-    config.save_config()
+    global_config.path = os.path.join(get_config_path(), "config.json")
+    global_config.clear_config()
+    global_config._save_config()
 
     system_mapping.populate()
-    custom_mapping.empty()
-    custom_mapping.clear_config()
-    custom_mapping.changed = False
+
+    active_preset.empty()
+    active_preset.clear_config()
+    active_preset.set_has_unsaved_changes(False)
 
     clear_write_history()
 
@@ -607,6 +637,9 @@ def quick_cleanup(log=True):
         assert not pipe.poll()
 
     assert macro_variables.is_alive(1)
+    for uinput in global_uinputs.devices.values():
+        uinput.write_count = 0
+        uinput.write_history = []
 
 
 def cleanup():
@@ -614,14 +647,16 @@ def cleanup():
 
     Using this is slower, usually quick_cleanup() is sufficient.
     """
-    print('cleanup')
+    print("cleanup")
 
-    os.system('pkill -f key-mapper-service')
-    os.system('pkill -f key-mapper-control')
+    os.system("pkill -f input-remapper-service")
+    os.system("pkill -f input-remapper-control")
     time.sleep(0.05)
 
     quick_cleanup(log=False)
     groups.refresh()
+    with patch.object(sys, "argv", ["input-remapper-service"]):
+        global_uinputs.prepare()
 
 
 def spy(obj, name):
@@ -629,25 +664,22 @@ def spy(obj, name):
     return patch.object(obj, name, wraps=obj.__getattribute__(name))
 
 
-def main():
-    cleanup()
+cleanup()
 
+
+def main():
     modules = sys.argv[1:]
     # discoverer is really convenient, but it can't find a specific test
     # in all of the available tests like unittest.main() does...,
     # so provide both options.
     if len(modules) > 0:
         # for example
-        # `tests/test.py test_integration.TestIntegration.test_can_start`
-        # or `tests/test.py test_integration test_daemon`
-        testsuite = unittest.defaultTestLoader.loadTestsFromNames(
-            [f'testcases.{module}' for module in modules]
-        )
+        # `tests/test.py integration.test_gui.TestGui.test_can_start`
+        # or `tests/test.py integration.test_gui integration.test_daemon`
+        testsuite = unittest.defaultTestLoader.loadTestsFromNames(modules)
     else:
         # run all tests by default
-        testsuite = unittest.defaultTestLoader.discover(
-            'testcases', pattern='*.py'
-        )
+        testsuite = unittest.defaultTestLoader.discover(".", pattern="test_*.py")
 
     # add a newline to each "qux (foo.bar)..." output before each test,
     # because the first log will be on the same line otherwise
@@ -658,8 +690,5 @@ def main():
         print()
 
     unittest.TextTestResult.startTest = start_test
-    unittest.TextTestRunner(verbosity=2).run(testsuite)
-
-
-if __name__ == "__main__":
-    main()
+    result = unittest.TextTestRunner(verbosity=2).run(testsuite)
+    sys.exit(not result.wasSuccessful())

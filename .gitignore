@@ -1,4 +1,4 @@
-keymapper/commit_hash.py
+inputremapper/commit_hash.py
 
 *.glade~
 *.glade#
@@ -60,7 +60,6 @@ coverage.xml
 
 # Translations
 *.mo
-*.pot
 
 # Django stuff:
 *.log

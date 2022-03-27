@@ -155,10 +155,13 @@ def _rename_config():
 def _find_target(symbol):
     """try to find a uinput with the required capabilities for the symbol."""
     capabilities = {EV_KEY: set(), EV_REL: set()}
+
     if is_this_a_macro(symbol):
-        capabilities = parse(symbol).get_capabilities()
-    else:
-        capabilities[EV_KEY] = {system_mapping.get(symbol)}
+        # deprecated mechanic, cannot figure this out anymore
+        # capabilities = parse(symbol).get_capabilities()
+        return None
+
+    capabilities[EV_KEY] = {system_mapping.get(symbol)}
 
     if len(capabilities[EV_REL]) > 0:
         return "mouse"
@@ -255,10 +258,10 @@ def migrate():
         _rename_config()
 
     if v < pkg_resources.parse_version("1.4.0"):
-        global_uinputs.prepare()
+        global_uinputs.prepare_all()
         _add_target()
 
-    if v < pkg_resources.parse_version("1.5.0"):
+    if v < pkg_resources.parse_version("1.4.1"):
         _otherwise_to_else()
 
     # add new migrations here

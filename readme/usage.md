@@ -13,8 +13,8 @@ You can also start it via `input-remapper-gtk`.
 First, select your device (like your keyboard) from the large dropdown on the top.
 Then you can already edit your keys, as shown in the screenshots.
 
-u would like to map this key. More information about the possible mappings
-can be found [below](#key-names-and-macros).
+In the text input field, type the key to which you would like to map this key.
+More information about the possible mappings can be found [below](#key-names-and-macros).
 
 Changes are saved automatically. Afterwards press the "Apply" button.
 
@@ -46,7 +46,7 @@ will trigger the mapping, because the combination is complete. This is
 not a bug. Otherwise every combination would have to automatically disable
 all keys that are involved in it.
 
-For example a combination of `LEFTSHIFT + a` for `b` would write "B" insetad,
+For example a combination of `LEFTSHIFT + a` for `b` would write "B" instead,
 because shift will be activated before you hit the "a". Therefore the
 environment will see shift and a "b", which will then be capitalized.
 
@@ -111,12 +111,12 @@ and it won't be able to inject anything a usb keyboard wouldn't been able to. Th
 the benefit of being compatible to all display servers, but means the environment will
 ultimately decide which character to write.
 
-<br/>
-<br/>
-<br/>
-<br/>
-<br/>
-<br/>
+# External tools
+
+Repositories listed here are made by input-remappers users. Feel free to extend. Beware,
+that I can't review their code, so use them at your own risk (just like everything).
+
+- input-remapper-xautopresets: https://github.com/DreadPirateLynx/input-remapper-xautopresets
 
 # Advanced
 

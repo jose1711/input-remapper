@@ -25,7 +25,13 @@ import os
 import unittest
 import tempfile
 
-from inputremapper.configs.paths import touch, mkdir, get_preset_path, get_config_path
+from inputremapper.configs.paths import (
+    touch,
+    mkdir,
+    get_preset_path,
+    get_config_path,
+    split_all,
+)
 
 
 def _raise(error):
@@ -43,7 +49,8 @@ class TestPaths(unittest.TestCase):
             self.assertTrue(os.path.exists(path_abcde))
             self.assertTrue(os.path.isfile(path_abcde))
             self.assertRaises(
-                ValueError, lambda: touch(os.path.join(local_tmp, "a/b/c/d/f/"))
+                ValueError,
+                lambda: touch(os.path.join(local_tmp, "a/b/c/d/f/")),
             )
 
     def test_mkdir(self):
@@ -54,12 +61,15 @@ class TestPaths(unittest.TestCase):
             self.assertTrue(os.path.isdir(path_bcde))
 
     def test_get_preset_path(self):
-        self.assertEqual(get_preset_path(), os.path.join(tmp, "presets"))
-        self.assertEqual(get_preset_path("a"), os.path.join(tmp, "presets/a"))
-        self.assertEqual(
-            get_preset_path("a", "b"), os.path.join(tmp, "presets/a/b.json")
-        )
+        self.assertTrue(get_preset_path().startswith(get_config_path()))
+        self.assertTrue(get_preset_path().endswith("presets"))
+        self.assertTrue(get_preset_path("a").endswith("presets/a"))
+        self.assertTrue(get_preset_path("a", "b").endswith("presets/a/b.json"))
 
     def test_get_config_path(self):
-        self.assertEqual(get_config_path(), tmp)
-        self.assertEqual(get_config_path("a", "b"), os.path.join(tmp, "a/b"))
+        # might end with /beta_XXX
+        self.assertTrue(get_config_path().startswith(f"{tmp}/.config/input-remapper"))
+        self.assertTrue(get_config_path("a", "b").endswith("a/b"))
+
+    def test_split_all(self):
+        self.assertListEqual(split_all("a/b/c/d"), ["a", "b", "c", "d"])

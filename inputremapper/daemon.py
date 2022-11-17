@@ -25,20 +25,22 @@ https://github.com/LEW21/pydbus/tree/cc407c8b1d25b7e28a6d661a29f9e661b1c9b964/ex
 """
 
 
+import atexit
+import json
 import os
 import sys
-import json
 import time
-import atexit
+from pathlib import PurePath
+from typing import Protocol, Dict, Optional
 
-from pydbus import SystemBus
 import gi
+from pydbus import SystemBus
 
 gi.require_version("GLib", "2.0")
 from gi.repository import GLib
 
 from inputremapper.logger import logger, is_debug
-from inputremapper.injection.injector import Injector, UNKNOWN
+from inputremapper.injection.injector import Injector, InjectorState
 from inputremapper.configs.preset import Preset
 from inputremapper.configs.global_config import global_config
 from inputremapper.configs.system_mapping import system_mapping
@@ -62,16 +64,16 @@ class AutoloadHistory:
         # preset of device -> (timestamp, preset)
         self._autoload_history = {}
 
-    def remember(self, group_key, preset):
+    def remember(self, group_key: str, preset: str):
         """Remember when this preset was autoloaded for the device."""
         self._autoload_history[group_key] = (time.time(), preset)
 
-    def forget(self, group_key):
+    def forget(self, group_key: str):
         """The injection was stopped or started by hand."""
         if group_key in self._autoload_history:
             del self._autoload_history[group_key]
 
-    def may_autoload(self, group_key, preset):
+    def may_autoload(self, group_key: str, preset: str):
         """Check if this autoload would be redundant.
 
         This is needed because udev triggers multiple times per hardware
@@ -116,6 +118,34 @@ def remove_timeout(func):
     return wrapped
 
 
+class DaemonProxy(Protocol):  # pragma: no cover
+    """The interface provided over the dbus."""
+
+    def stop_injecting(self, group_key: str) -> None:
+        ...
+
+    def get_state(self, group_key: str) -> InjectorState:
+        ...
+
+    def start_injecting(self, group_key: str, preset: str) -> bool:
+        ...
+
+    def stop_all(self) -> None:
+        ...
+
+    def set_config_dir(self, config_dir: str) -> None:
+        ...
+
+    def autoload(self) -> None:
+        ...
+
+    def autoload_single(self, group_key: str) -> None:
+        ...
+
+    def hello(self, out: str) -> str:
+        ...
+
+
 class Daemon:
     """Starts injecting keycodes based on the configuration.
 
@@ -136,7 +166,7 @@ class Daemon:
                 </method>
                 <method name='get_state'>
                     <arg type='s' name='group_key' direction='in'/>
-                    <arg type='i' name='response' direction='out'/>
+                    <arg type='s' name='response' direction='out'/>
                 </method>
                 <method name='start_injecting'>
                     <arg type='s' name='group_key' direction='in'/>
@@ -164,7 +194,7 @@ class Daemon:
     def __init__(self):
         """Constructs the daemon."""
         logger.debug("Creating daemon")
-        self.injectors = {}
+        self.injectors: Dict[str, Injector] = {}
 
         self.config_dir = None
 
@@ -184,17 +214,16 @@ class Daemon:
         macro_variables.start()
 
     @classmethod
-    def connect(cls, fallback=True):
+    def connect(cls, fallback: bool = True) -> DaemonProxy:
         """Get an interface to start and stop injecting keystrokes.
 
         Parameters
         ----------
-        fallback : bool
-            If true, returns an instance of the daemon instead if it cannot
-            connect
+        fallback
+            If true, starts the daemon via pkexec if it cannot connect.
         """
+        bus = SystemBus()
         try:
-            bus = SystemBus()
             interface = bus.get(BUS_NAME, timeout=BUS_TIMEOUT)
             logger.info("Connected to the service")
         except GLib.GError as error:
@@ -252,12 +281,12 @@ class Daemon:
         logger.debug("Running daemon")
         loop.run()
 
-    def refresh(self, group_key=None):
+    def refresh(self, group_key: Optional[str] = None):
         """Refresh groups if the specified group is unknown.
 
         Parameters
         ----------
-        group_key : str
+        group_key
             unique identifier used by the groups object
         """
         now = time.time()
@@ -276,24 +305,25 @@ class Daemon:
             groups.refresh()
             self.refreshed_devices_at = now
 
-    def stop_injecting(self, group_key):
+    def stop_injecting(self, group_key: str):
         """Stop injecting the preset mappings for a single device."""
         if self.injectors.get(group_key) is None:
             logger.debug(
-                'Tried to stop injector, but none is running for group "%s"', group_key
+                'Tried to stop injector, but none is running for group "%s"',
+                group_key,
             )
             return
 
         self.injectors[group_key].stop_injecting()
         self.autoload_history.forget(group_key)
 
-    def get_state(self, group_key):
+    def get_state(self, group_key: str) -> InjectorState:
         """Get the injectors state."""
         injector = self.injectors.get(group_key)
-        return injector.get_state() if injector else UNKNOWN
+        return injector.get_state() if injector else InjectorState.UNKNOWN
 
     @remove_timeout
-    def set_config_dir(self, config_dir):
+    def set_config_dir(self, config_dir: str):
         """All future operations will use this config dir.
 
         Existing injections (possibly of the previous user) will be kept
@@ -301,11 +331,11 @@ class Daemon:
 
         Parameters
         ----------
-        config_dir : string
+        config_dir
             This path contains config.json, xmodmap.json and the
             presets directory
         """
-        config_path = os.path.join(config_dir, "config.json")
+        config_path = PurePath(config_dir, "config.json")
         if not os.path.exists(config_path):
             logger.error('"%s" does not exist', config_path)
             return
@@ -313,12 +343,12 @@ class Daemon:
         self.config_dir = config_dir
         global_config.load_config(config_path)
 
-    def _autoload(self, group_key):
+    def _autoload(self, group_key: str):
         """Check if autoloading is a good idea, and if so do it.
 
         Parameters
         ----------
-        group_key : str
+        group_key
             unique identifier used by the groups object
         """
         self.refresh(group_key)
@@ -354,14 +384,14 @@ class Daemon:
         self.autoload_history.remember(group.key, preset)
 
     @remove_timeout
-    def autoload_single(self, group_key):
+    def autoload_single(self, group_key: str):
         """Inject the configured autoload preset for the device.
 
         If the preset is already being injected, it won't autoload it again.
 
         Parameters
         ----------
-        group_key : str
+        group_key
             unique identifier used by the groups object
         """
         # avoid some confusing logs and filter obviously invalid requests
@@ -404,7 +434,7 @@ class Daemon:
         for group_key, _ in autoload_presets:
             self._autoload(group_key)
 
-    def start_injecting(self, group_key, preset):
+    def start_injecting(self, group_key: str, preset: str) -> bool:
         """Start injecting the preset for the device.
 
         Returns True on success. If an injection is already ongoing for
@@ -412,9 +442,9 @@ class Daemon:
 
         Parameters
         ----------
-        group_key : string
+        group_key
             The unique key of the group
-        preset : string
+        preset
             The name of the preset
         """
         logger.info('Request to start injecting for "%s"', group_key)
@@ -434,30 +464,12 @@ class Daemon:
             logger.error('Could not find group "%s"', group_key)
             return False
 
-        preset_path = os.path.join(
+        preset_path = PurePath(
             self.config_dir,
             "presets",
             sanitize_path_component(group.name),
             f"{preset}.json",
         )
-
-        preset = Preset()
-
-        try:
-            preset.load(preset_path)
-        except FileNotFoundError as error:
-            logger.error(str(error))
-            return False
-
-        for event_combination, (symbol, target) in preset:
-            # only create those uinputs that are required to avoid
-            # confusing the system. Seems to be especially important with
-            # gamepads, because some apps treat the first gamepad they found
-            # as the only gamepad they'll ever care about.
-            global_uinputs.prepare_single(target)
-
-        if self.injectors.get(group_key) is not None:
-            self.stop_injecting(group_key)
 
         # Path to a dump of the xkb mappings, to provide more human
         # readable keys in the correct keyboard layout to the service.
@@ -470,11 +482,36 @@ class Daemon:
                 # date when the system layout changes.
                 xmodmap = json.load(file)
                 logger.debug('Using keycodes from "%s"', xmodmap_path)
+
+                # this creates the system_mapping._xmodmap, which we need to do now
+                # otherwise it might be created later which will override the changes
+                # we do here.
+                # Do we really need to lazyload in the system_mapping?
+                # this kind of bug is stupid to track down
+                system_mapping.get_name(0)
                 system_mapping.update(xmodmap)
                 # the service now has process wide knowledge of xmodmap
                 # keys of the users session
         except FileNotFoundError:
             logger.error('Could not find "%s"', xmodmap_path)
+
+        preset = Preset(preset_path)
+
+        try:
+            preset.load()
+        except FileNotFoundError as error:
+            logger.error(str(error))
+            return False
+
+        for mapping in preset:
+            # only create those uinputs that are required to avoid
+            # confusing the system. Seems to be especially important with
+            # gamepads, because some apps treat the first gamepad they found
+            # as the only gamepad they'll ever care about.
+            global_uinputs.prepare_single(mapping.target_uinput)
+
+        if self.injectors.get(group_key) is not None:
+            self.stop_injecting(group_key)
 
         try:
             injector = Injector(group, preset)
@@ -493,7 +530,7 @@ class Daemon:
         for group_key in list(self.injectors.keys()):
             self.stop_injecting(group_key)
 
-    def hello(self, out):
+    def hello(self, out: str):
         """Used for tests."""
         logger.info('Received "%s" from client', out)
         return out

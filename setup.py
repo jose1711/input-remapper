@@ -56,8 +56,10 @@ class Install(install):
 def get_packages(base="inputremapper"):
     """Return all modules used in input-remapper.
 
-    For example 'inputremapper.gui' or 'inputremapper.injection.consumers'
+    For example 'inputremapper.gui' or 'inputremapper.injection.mapping_handlers'
     """
+    # TODO I think there is a built-in tool that does the same,
+    #  forgot where I saw it
     if not os.path.exists(os.path.join(base, "__init__.py")):
         # only python modules
         return []
@@ -102,7 +104,7 @@ for po_file in glob.glob(PO_FILES):
 
 setup(
     name="input-remapper",
-    version="1.5.0",
+    version="1.6.0-beta",
     description="A tool to change the mapping of your input device buttons",
     author="Sezanzeb",
     author_email="proxima@sezanzeb.de",
@@ -123,7 +125,7 @@ setup(
         ("/usr/bin/", ["bin/input-remapper-gtk"]),
         ("/usr/bin/", ["bin/input-remapper-service"]),
         ("/usr/bin/", ["bin/input-remapper-control"]),
-        ("/usr/bin/", ["bin/input-remapper-helper"]),
+        ("/usr/bin/", ["bin/input-remapper-reader-service"]),
         # those will be deleted at some point:
         ("/usr/bin/", ["bin/key-mapper-gtk"]),
         ("/usr/bin/", ["bin/key-mapper-service"]),

@@ -18,19 +18,16 @@
 # You should have received a copy of the GNU General Public License
 # along with input-remapper.  If not, see <https://www.gnu.org/licenses/>.
 
-
 """Logging setup for input-remapper."""
 
-
+import logging
 import os
 import sys
-import shutil
 import time
-import logging
-import pkg_resources
 from datetime import datetime
+from typing import cast, Tuple
 
-from inputremapper.user import HOME
+import pkg_resources
 
 try:
     from inputremapper.commit_hash import COMMIT_HASH
@@ -43,42 +40,82 @@ start = time.time()
 previous_key_debug_log = None
 
 
-def debug_key(self, key, msg, *args):
-    """Log a spam message custom tailored to keycode_mapper.
+def parse_mapping_handler(mapping_handler):
+    indent = 0
+    lines_and_indent = []
+    while True:
+        if isinstance(handler, str):
+            lines_and_indent.append([mapping_handler, indent])
+            break
 
-    Parameters
-    ----------
-    key : tuple of int
-        anything that can be string formatted, but usually a tuple of
-        (type, code, value) tuples
-    """
-    # pylint: disable=protected-access
-    if not self.isEnabledFor(logging.DEBUG):
-        return
+        if isinstance(mapping_handler, list):
+            for sub_handler in mapping_handler:
+                sub_list = parse_mapping_handler(sub_handler)
+                for line in sub_list:
+                    line[1] += indent
+                lines_and_indent.extend(sub_list)
+            break
 
-    global previous_key_debug_log
+        lines_and_indent.append([str(mapping_handler), indent])
+        try:
+            mapping_handler = mapping_handler.child
+        except AttributeError:
+            break
 
-    msg = msg % args
-    str_key = str(key)
-    str_key = str_key.replace(",)", ")")
-    spacing = " " + "·" * max(0, 30 - len(msg))
-    if len(spacing) == 1:
-        spacing = ""
-    msg = f"{msg}{spacing} {str_key}"
-
-    if msg == previous_key_debug_log:
-        # avoid some super spam from EV_ABS events
-        return
-
-    previous_key_debug_log = msg
-
-    self._log(logging.DEBUG, msg, args=None)
+        indent += 1
+    return lines_and_indent
 
 
-logging.Logger.debug_key = debug_key
+class Logger(logging.Logger):
+    def debug_mapping_handler(self, mapping_handler):
+        """Parse the structure of a mapping_handler and log it."""
+        if not self.isEnabledFor(logging.DEBUG):
+            return
+
+        lines_and_indent = parse_mapping_handler(mapping_handler)
+        for line in lines_and_indent:
+            indent = "    "
+            msg = indent * line[1] + line[0]
+            self._log(logging.DEBUG, msg, args=None)
+
+    def debug_key(self, key: Tuple[int, int, int], msg, *args):
+        """Log a key-event message.
+
+        Example:
+        ... DEBUG event_reader.py:143: forwarding ···················· (1, 71, 1)
+
+        Parameters
+        ----------
+        key
+            anything that can be string formatted, but usually a tuple of
+            (type, code, value) tuples
+        """
+        # pylint: disable=protected-access
+        if not self.isEnabledFor(logging.DEBUG):
+            return
+
+        global previous_key_debug_log
+
+        msg = msg % args
+        str_key = str(key)
+        str_key = str_key.replace(",)", ")")
+        spacing = " " + "·" * max(0, 30 - len(msg))
+        if len(spacing) == 1:
+            spacing = ""
+        msg = f"{msg}{spacing} {str_key}"
+
+        if msg == previous_key_debug_log:
+            # avoid some super spam from EV_ABS events
+            return
+
+        previous_key_debug_log = msg
+
+        self._log(logging.DEBUG, msg, args=None)
 
 
-logger = logging.getLogger("input-remapper")
+# https://github.com/python/typeshed/issues/1801
+logging.setLoggerClass(Logger)
+logger = cast(Logger, logging.getLogger("input-remapper"))
 
 
 def is_debug():
@@ -128,16 +165,16 @@ class ColorfulFormatter(logging.Formatter):
             logging.FATAL: 9,
         }
 
-    def _get_ansi_code(self, r, g, b):
+    def _get_ansi_code(self, r: int, g: int, b: int):
         return 16 + b + (6 * g) + (36 * r)
 
-    def _word_to_color(self, word):
+    def _word_to_color(self, word: str):
         """Convert a word to a 8bit ansi color code."""
         digit_sum = sum([ord(char) for char in word])
         index = digit_sum % len(self.allowed_colors)
         return self.allowed_colors[index]
 
-    def _allocate_debug_log_color(self, record):
+    def _allocate_debug_log_color(self, record: logging.LogRecord):
         """Get the color that represents the source file of the log."""
         if self.file_color_mapping.get(record.filename) is not None:
             return self.file_color_mapping[record.filename]
@@ -152,15 +189,18 @@ class ColorfulFormatter(logging.Formatter):
 
     def _get_process_name(self):
         """Generate a beaitiful to read name for this process."""
-        name = sys.argv[0].split("/")[-1].split("-")[-1]
-        return {
-            "gtk": "GUI",
-            "helper": "GUI-Helper",
-            "service": "Service",
-            "control": "Control",
-        }.get(name, name)
+        process_path = sys.argv[0]
+        process_name = process_path.split("/")[-1]
 
-    def _get_format(self, record):
+        if "input-remapper-" in process_name:
+            process_name = process_name.replace("input-remapper-", "")
+
+        if process_name == "gtk":
+            process_name = "GUI"
+
+        return process_name
+
+    def _get_format(self, record: logging.LogRecord):
         """Generate a message format string."""
         debug_mode = is_debug()
 
@@ -194,7 +234,7 @@ class ColorfulFormatter(logging.Formatter):
             "\033[0m"  # end style
         ).replace("  ", " ")
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord):
         """Overwritten format function."""
         # pylint: disable=protected-access
         self._style._fmt = self._get_format(record)
@@ -208,10 +248,9 @@ logger.setLevel(logging.INFO)
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
-VERSION = ""
+VERSION = "1.6.0-beta"
 EVDEV_VERSION = None
 try:
-    VERSION = pkg_resources.require("input-remapper")[0].version
     EVDEV_VERSION = pkg_resources.require("evdev")[0].version
 except Exception as error:
     # there have been pkg_resources.DistributionNotFound and
@@ -219,6 +258,9 @@ except Exception as error:
     # We can safely ignore all Exceptions here
     logger.info("Could not figure out the version")
     logger.debug(error)
+
+# check if the version is something like 1.5.0-beta or 1.5.0-beta.5
+IS_BETA = "beta" in VERSION
 
 
 def log_info(name="input-remapper"):
@@ -293,5 +335,5 @@ def trim_logfile(log_path):
     except PermissionError:
         # let the outermost PermissionError handler handle it
         raise
-    except Exception as e:
-        logger.error('Failed to trim logfile: "%s"', str(e))
+    except Exception as exception:
+        logger.error('Failed to trim logfile: "%s"', str(exception))

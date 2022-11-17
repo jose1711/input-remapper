@@ -18,34 +18,52 @@
 # You should have received a copy of the GNU General Public License
 # along with input-remapper.  If not, see <https://www.gnu.org/licenses/>.
 
+"""Migration functions.
 
-"""Migration functions"""
+Only write changes to disk, if there actually are changes. Otherwise file-modification
+dates are destroyed.
+"""
 
+import copy
+import json
 import os
 import re
-import json
-import copy
 import shutil
-import pkg_resources
-
 from pathlib import Path
-from evdev.ecodes import EV_KEY, EV_REL
+from typing import Iterator, Tuple, Dict
 
-from inputremapper.logger import logger, VERSION
-from inputremapper.user import HOME
+import pkg_resources
+from evdev.ecodes import (
+    EV_KEY,
+    EV_ABS,
+    EV_REL,
+    ABS_X,
+    ABS_Y,
+    ABS_RX,
+    ABS_RY,
+    REL_X,
+    REL_Y,
+    REL_WHEEL_HI_RES,
+    REL_HWHEEL_HI_RES,
+)
+
+from inputremapper.configs.mapping import Mapping, UIMapping
 from inputremapper.configs.paths import get_preset_path, mkdir, CONFIG_PATH, remove
+from inputremapper.configs.preset import Preset
 from inputremapper.configs.system_mapping import system_mapping
+from inputremapper.event_combination import EventCombination
 from inputremapper.injection.global_uinputs import global_uinputs
 from inputremapper.injection.macros.parse import is_this_a_macro
+from inputremapper.logger import logger, VERSION, IS_BETA
+from inputremapper.user import HOME
 
 
-def all_presets():
+def all_presets() -> Iterator[Tuple[os.PathLike, Dict]]:
     """Get all presets for all groups as list."""
     if not os.path.exists(get_preset_path()):
-        return []
+        return
 
     preset_path = Path(get_preset_path())
-    presets = []
     for folder in preset_path.iterdir():
         if not folder.is_dir():
             continue
@@ -61,8 +79,6 @@ def all_presets():
             except json.decoder.JSONDecodeError:
                 logger.warning('Invalid json format in preset "%s"', preset)
                 continue
-
-    return presets
 
 
 def config_version():
@@ -93,7 +109,7 @@ def _config_suffix():
 def _preset_path():
     """Migrate the folder structure from < 0.4.0.
 
-    Move existing presets into the new subfolder "presets"
+    Move existing presets into the new subfolder 'presets'
     """
     new_preset_folder = os.path.join(CONFIG_PATH, "presets")
     if os.path.exists(get_preset_path()) or not os.path.exists(CONFIG_PATH):
@@ -115,18 +131,22 @@ def _preset_path():
 def _mapping_keys():
     """Update all preset mappings.
 
-    Update all keys in preset to include value e.g.: "1,5"->"1,5,1"
+    Update all keys in preset to include value e.g.: '1,5'->'1,5,1'
     """
     for preset, preset_dict in all_presets():
+        changes = 0
         if "mapping" in preset_dict.keys():
             mapping = copy.deepcopy(preset_dict["mapping"])
             for key in mapping.keys():
                 if key.count(",") == 1:
                     preset_dict["mapping"][f"{key},1"] = preset_dict["mapping"].pop(key)
+                    changes += 1
 
-        with open(preset, "w") as file:
-            json.dump(preset_dict, file, indent=4)
-            file.write("\n")
+        if changes:
+            with open(preset, "w") as file:
+                logger.info('Updating mapping keys of "%s"', preset)
+                json.dump(preset_dict, file, indent=4)
+                file.write("\n")
 
 
 def _update_version():
@@ -135,25 +155,25 @@ def _update_version():
     if not os.path.exists(config_file):
         return
 
-    logger.info("Updating version in config to %s", VERSION)
     with open(config_file, "r") as file:
         config = json.load(file)
 
     config["version"] = VERSION
     with open(config_file, "w") as file:
+        logger.info('Updating version in config to "%s"', VERSION)
         json.dump(config, file, indent=4)
 
 
-def _rename_config():
+def _rename_config(new_path=CONFIG_PATH):
     """Rename .config/key-mapper to .config/input-remapper."""
     old_config_path = os.path.join(HOME, ".config/key-mapper")
-    if not os.path.exists(CONFIG_PATH) and os.path.exists(old_config_path):
-        logger.info("Moving %s to %s", old_config_path, CONFIG_PATH)
-        shutil.move(old_config_path, CONFIG_PATH)
+    if not os.path.exists(new_path) and os.path.exists(old_config_path):
+        logger.info("Moving %s to %s", old_config_path, new_path)
+        shutil.move(old_config_path, new_path)
 
 
 def _find_target(symbol):
-    """try to find a uinput with the required capabilities for the symbol."""
+    """Try to find a uinput with the required capabilities for the symbol."""
     capabilities = {EV_KEY: set(), EV_REL: set()}
 
     if is_this_a_macro(symbol):
@@ -170,12 +190,12 @@ def _find_target(symbol):
         if capabilities[EV_KEY].issubset(uinput.capabilities()[EV_KEY]):
             return name
 
-    logger.info("could not find a suitable target UInput for '%s'", symbol)
+    logger.info('could not find a suitable target UInput for "%s"', symbol)
     return None
 
 
 def _add_target():
-    """add the target field to each preset mapping"""
+    """Add the target field to each preset mapping."""
     for preset, preset_dict in all_presets():
         if "mapping" not in preset_dict.keys():
             continue
@@ -188,7 +208,11 @@ def _add_target():
             target = _find_target(symbol)
             if target is None:
                 target = "keyboard"
-                symbol = f"{symbol}\n# Broken mapping:\n# No target can handle all specified keycodes"
+                symbol = (
+                    f"{symbol}\n"
+                    "# Broken mapping:\n"
+                    "# No target can handle all specified keycodes"
+                )
 
             logger.info(
                 'Changing target of mapping for "%s" in preset "%s" to "%s"',
@@ -204,6 +228,7 @@ def _add_target():
             continue
 
         with open(preset, "w") as file:
+            logger.info('Adding targets for "%s"', preset)
             json.dump(preset_dict, file, indent=4)
             file.write("\n")
 
@@ -240,8 +265,150 @@ def _otherwise_to_else():
             continue
 
         with open(preset, "w") as file:
+            logger.info('Changing otherwise to else for "%s"', preset)
             json.dump(preset_dict, file, indent=4)
             file.write("\n")
+
+
+def _convert_to_individual_mappings():
+    """Convert preset.json
+    from {key: [symbol, target]}
+    to {key: {target: target, symbol: symbol, ...}}
+    """
+
+    for preset_path, old_preset in all_presets():
+        preset = Preset(preset_path, UIMapping)
+        if "mapping" in old_preset.keys():
+            for combination, symbol_target in old_preset["mapping"].items():
+                logger.info(
+                    'migrating from "%s: %s" to mapping dict',
+                    combination,
+                    symbol_target,
+                )
+                try:
+                    combination = EventCombination.from_string(combination)
+                except ValueError:
+                    logger.error(
+                        "unable to migrate mapping with invalid combination %s",
+                        combination,
+                    )
+                    continue
+
+                mapping = UIMapping(
+                    event_combination=combination,
+                    target_uinput=symbol_target[1],
+                    output_symbol=symbol_target[0],
+                )
+                preset.add(mapping)
+
+        if (
+            "gamepad" in old_preset.keys()
+            and "joystick" in old_preset["gamepad"].keys()
+        ):
+            joystick_dict = old_preset["gamepad"]["joystick"]
+            left_purpose = joystick_dict.get("left_purpose")
+            right_purpose = joystick_dict.get("right_purpose")
+            # TODO if pointer_speed is migrated, why is it in my config?
+            pointer_speed = joystick_dict.get("pointer_speed")
+            if pointer_speed:
+                pointer_speed /= 100
+            non_linearity = joystick_dict.get("non_linearity")  # Todo
+            x_scroll_speed = joystick_dict.get("x_scroll_speed")
+            y_scroll_speed = joystick_dict.get("y_scroll_speed")
+
+            cfg = {
+                "event_combination": None,
+                "target_uinput": "mouse",
+                "output_type": EV_REL,
+                "output_code": None,
+            }
+
+            if left_purpose == "mouse":
+                x_config = cfg.copy()
+                y_config = cfg.copy()
+                x_config["event_combination"] = ",".join((str(EV_ABS), str(ABS_X), "0"))
+                y_config["event_combination"] = ",".join((str(EV_ABS), str(ABS_Y), "0"))
+                x_config["output_code"] = REL_X
+                y_config["output_code"] = REL_Y
+                mapping_x = Mapping(**x_config)
+                mapping_y = Mapping(**y_config)
+                if pointer_speed:
+                    mapping_x.gain = pointer_speed
+                    mapping_y.gain = pointer_speed
+                preset.add(mapping_x)
+                preset.add(mapping_y)
+
+            if right_purpose == "mouse":
+                x_config = cfg.copy()
+                y_config = cfg.copy()
+                x_config["event_combination"] = ",".join(
+                    (str(EV_ABS), str(ABS_RX), "0")
+                )
+                y_config["event_combination"] = ",".join(
+                    (str(EV_ABS), str(ABS_RY), "0")
+                )
+                x_config["output_code"] = REL_X
+                y_config["output_code"] = REL_Y
+                mapping_x = Mapping(**x_config)
+                mapping_y = Mapping(**y_config)
+                if pointer_speed:
+                    mapping_x.gain = pointer_speed
+                    mapping_y.gain = pointer_speed
+                preset.add(mapping_x)
+                preset.add(mapping_y)
+
+            if left_purpose == "wheel":
+                x_config = cfg.copy()
+                y_config = cfg.copy()
+                x_config["event_combination"] = ",".join((str(EV_ABS), str(ABS_X), "0"))
+                y_config["event_combination"] = ",".join((str(EV_ABS), str(ABS_Y), "0"))
+                x_config["output_code"] = REL_HWHEEL_HI_RES
+                y_config["output_code"] = REL_WHEEL_HI_RES
+                mapping_x = Mapping(**x_config)
+                mapping_y = Mapping(**y_config)
+                if x_scroll_speed:
+                    mapping_x.gain = x_scroll_speed
+                if y_scroll_speed:
+                    mapping_y.gain = y_scroll_speed
+                preset.add(mapping_x)
+                preset.add(mapping_y)
+
+            if right_purpose == "wheel":
+                x_config = cfg.copy()
+                y_config = cfg.copy()
+                x_config["event_combination"] = ",".join(
+                    (str(EV_ABS), str(ABS_RX), "0")
+                )
+                y_config["event_combination"] = ",".join(
+                    (str(EV_ABS), str(ABS_RY), "0")
+                )
+                x_config["output_code"] = REL_HWHEEL_HI_RES
+                y_config["output_code"] = REL_WHEEL_HI_RES
+                mapping_x = Mapping(**x_config)
+                mapping_y = Mapping(**y_config)
+                if x_scroll_speed:
+                    mapping_x.gain = x_scroll_speed
+                if y_scroll_speed:
+                    mapping_y.gain = y_scroll_speed
+                preset.add(mapping_x)
+                preset.add(mapping_y)
+
+        preset.save()
+
+
+def _copy_to_beta():
+    if os.path.exists(CONFIG_PATH) or not IS_BETA:
+        # don't copy to already existing folder
+        # users should delete the beta folder if they need to
+        return
+
+    regular_path = os.path.join(*os.path.split(CONFIG_PATH)[:-1])
+    # workaround to maker sure the rename from key-mapper to input-remapper
+    # does not move everythig to the beta folder
+    _rename_config(regular_path)
+    if os.path.exists(regular_path):
+        logger.debug("copying all from %s to %s", regular_path, CONFIG_PATH)
+        shutil.copytree(regular_path, CONFIG_PATH)
 
 
 def _remove_logs():
@@ -258,6 +425,8 @@ def _remove_logs():
 
 def migrate():
     """Migrate config files to the current release."""
+
+    _copy_to_beta()
     v = config_version()
     if v < pkg_resources.parse_version("0.4.0"):
         _config_suffix()
@@ -276,7 +445,11 @@ def migrate():
     if v < pkg_resources.parse_version("1.4.1"):
         _otherwise_to_else()
 
-    _remove_logs()
+    if v < pkg_resources.parse_version("1.5.0"):
+        _remove_logs()
+
+    if v < pkg_resources.parse_version("1.6.0-beta"):
+        _convert_to_individual_mappings()
 
     # add new migrations here
 

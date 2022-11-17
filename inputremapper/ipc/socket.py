@@ -43,22 +43,23 @@ are much easier to handle.
 
 
 # Issues:
-# - Tests don't pass with Server (reader) and Client (helper) instead of Pipe
+# - Tests don't pass with Server and Client instead of Pipe for reader-client
+#   and service communication or something
 # - Had one case of a test that was blocking forever, seems very rare.
 # - Hard to debug, generally very problematic compared to Pipes
 # The tool works fine, it's just the tests. BrokenPipe errors reported
 # by _Server all the time.
 
 
+import json
+import os
 import select
 import socket
-import os
 import time
-import json
+from typing import Union
 
-from inputremapper.logger import logger
 from inputremapper.configs.paths import mkdir, chown
-
+from inputremapper.logger import logger
 
 # something funny that most likely won't appear in messages.
 # also add some ones so that 01 in the payload won't offset
@@ -121,7 +122,7 @@ class Base:
                 if len(chunk) == 0:
                     # select keeps telling me the socket has messages
                     # ready to be received, and I keep getting empty
-                    # buffers. Happened during a test that ran two helper
+                    # buffers. Happened during a test that ran two reader-service
                     # processes without stopping the first one.
                     attempts += 1
                     if attempts == 2 or not self.reconnect():
@@ -137,7 +138,7 @@ class Base:
                 if parsed[0] < self._created_at:
                     # important to avoid race conditions between multiple
                     # unittests, for example old terminate messages reaching
-                    # a new instance of the helper.
+                    # a new instance of the reader-service.
                     logger.debug("Ignoring old message %s", parsed)
                     continue
 
@@ -147,7 +148,7 @@ class Base:
         """Get the next message or None if nothing to read.
 
         Doesn't transmit pickles, to avoid injection attacks on the
-        privileged helper. Only messages that can be converted to json
+        privileged reader-service. Only messages that can be converted to json
         are allowed.
         """
         self._receive_new_messages()
@@ -165,8 +166,8 @@ class Base:
         self._receive_new_messages()
         return len(self._unread) > 0
 
-    def send(self, message):
-        """Send jsonable messages, like numbers, strings or objects."""
+    def send(self, message: Union[str, int, float, dict, list, tuple]):
+        """Send json-serializable messages."""
         dump = bytes(json.dumps((time.time(), message)), ENCODING)
         self.unsent.append(dump)
 
@@ -226,7 +227,7 @@ class _Client(Base):
         return True
 
     def fileno(self):
-        """For compatibility with select.select"""
+        """For compatibility with select.select."""
         self.connect()
         return self.socket.fileno()
 

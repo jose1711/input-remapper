@@ -21,16 +21,14 @@
 from __future__ import annotations
 
 import itertools
+from typing import Tuple, Iterable, Union, Callable, Sequence, List
 
-from typing import Tuple, Iterable
-
-import evdev
 from evdev import ecodes
 
-from inputremapper.logger import logger
-from inputremapper.configs.system_mapping import system_mapping
-from inputremapper.input_event import InputEvent
-from inputremapper.exceptions import InputEventCreationError
+from inputremapper.input_event import (
+    InputEvent,
+    InputEventValidationType,
+)
 
 # having shift in combinations modifies the configured output,
 # ctrl might not work at all
@@ -44,59 +42,85 @@ DIFFICULT_COMBINATIONS = [
 ]
 
 
+EventCombinationInitType = Union[
+    InputEventValidationType,
+    Iterable[InputEventValidationType],
+]
+
+EventCombinationValidatorType = Union[EventCombinationInitType, str]
+
+
 class EventCombination(Tuple[InputEvent]):
-    """one or multiple InputEvent objects for use as an unique identifier for mappings"""
+    """One or more InputEvents for use as a unique identifier for mappings."""
 
     # tuple is immutable, therefore we need to override __new__()
     # https://jfine-python-classes.readthedocs.io/en/latest/subclass-tuple.html
-    def __new__(cls, *init_args) -> EventCombination:
-        events = []
-        for init_arg in init_args:
-            event = None
+    def __new__(cls, events: EventCombinationInitType) -> EventCombination:
+        validated_events = []
+        try:
+            validated_events.append(InputEvent.validate(events))
 
-            for constructor in InputEvent.__get_validators__():
-                try:
-                    event = constructor(init_arg)
-                    break
-                except InputEventCreationError:
-                    pass
+        except ValueError:
+            for event in events:
+                validated_events.append(InputEvent.validate(event))
 
-            if event:
-                events.append(event)
-            else:
-                raise ValueError(f"failed to create InputEvent with {init_arg = }")
+        if len(validated_events) == 0:
+            raise ValueError(f"failed to create EventCombination with {events = }")
 
-        return super().__new__(cls, events)
+        # mypy bug: https://github.com/python/mypy/issues/8957
+        # https://github.com/python/mypy/issues/8541
+        return super().__new__(cls, validated_events)  # type: ignore
 
     def __str__(self):
-        #  only used in tests and logging
+        return " + ".join(event.description(exclude_threshold=True) for event in self)
+
+    def __repr__(self):
         return f"<EventCombination {', '.join([str(e.event_tuple) for e in self])}>"
 
     @classmethod
     def __get_validators__(cls):
-        """used by pydantic to create EventCombination objects"""
-        yield cls.from_string
-        yield cls.from_events
+        """Used by pydantic to create EventCombination objects."""
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, init_arg: EventCombinationValidatorType) -> EventCombination:
+        """Try all the different methods, and raise an error if none succeed."""
+        if isinstance(init_arg, EventCombination):
+            return init_arg
+
+        combi = None
+        validators: Sequence[Callable[..., EventCombination]] = (cls.from_string, cls)
+        for validator in validators:
+            try:
+                combi = validator(init_arg)
+                break
+            except ValueError:
+                pass
+
+        if combi:
+            return combi
+        raise ValueError(f"failed to create EventCombination with {init_arg = }")
 
     @classmethod
     def from_string(cls, init_string: str) -> EventCombination:
-        init_args = init_string.split("+")
-        return cls(*init_args)
+        """Create a EventCombination form a string like '1,2,3+4,5,6'."""
+        try:
+            init_strs = init_string.split("+")
+            return cls(init_strs)
+        except AttributeError as exception:
+            raise ValueError(
+                f"failed to create EventCombination from {init_string = }"
+            ) from exception
 
     @classmethod
-    def from_events(
-        cls, init_events: Iterable[InputEvent | evdev.InputEvent]
-    ) -> EventCombination:
-        return cls(*init_events)
+    def empty_combination(cls) -> EventCombination:
+        """A combination that has default invalid (to evdev) values.
 
-    def contains_type_and_code(self, type, code) -> bool:
-        """if a InputEvent contains the type and code"""
-        for event in self:
-            if event.type_and_code == (type, code):
-                return True
-        return False
+        Useful for the UI to indicate that this combination is not set
+        """
+        return cls("99,99,99")
 
-    def is_problematic(self):
+    def is_problematic(self) -> bool:
         """Is this combination going to work properly on all systems?"""
         if len(self) <= 1:
             return False
@@ -110,8 +134,12 @@ class EventCombination(Tuple[InputEvent]):
 
         return False
 
-    def get_permutations(self):
-        """Get a list of EventCombination objects representing all possible permutations.
+    def has_input_axis(self) -> bool:
+        """Check if there is any analog event in self."""
+        return False in (event.is_key_event for event in self)
+
+    def get_permutations(self) -> List[EventCombination]:
+        """Get a list of EventCombinations representing all possible permutations.
 
         combining a + b + c should have the same result as b + a + c.
         Only the last combination remains the same in the returned result.
@@ -121,102 +149,16 @@ class EventCombination(Tuple[InputEvent]):
 
         permutations = []
         for permutation in itertools.permutations(self[:-1]):
-            permutations.append(EventCombination(*permutation, self[-1]))
+            permutations.append(EventCombination((*permutation, self[-1])))
 
         return permutations
 
-    def json_str(self) -> str:
-        return "+".join([event.json_str() for event in self])
+    def json_key(self) -> str:
+        """Get a representation of the input that works as key in a json object."""
+        return "+".join([event.json_key() for event in self])
 
     def beautify(self) -> str:
         """Get a human readable string representation."""
-        result = []
-
-        for event in self:
-
-            if event.type not in ecodes.bytype:
-                logger.error("Unknown type for %s", event)
-                result.append(str(event.code))
-                continue
-
-            if event.code not in ecodes.bytype[event.type]:
-                logger.error("Unknown combination code for %s", event)
-                result.append(str(event.code))
-                continue
-
-            key_name = None
-
-            # first try to find the name in xmodmap to not display wrong
-            # names due to the keyboard layout
-            if event.type == ecodes.EV_KEY:
-                key_name = system_mapping.get_name(event.code)
-
-            if key_name is None:
-                # if no result, look in the linux combination constants. On a german
-                # keyboard for example z and y are switched, which will therefore
-                # cause the wrong letter to be displayed.
-                key_name = ecodes.bytype[event.type][event.code]
-                if isinstance(key_name, list):
-                    key_name = key_name[0]
-
-            if event.type != ecodes.EV_KEY:
-                direction = {
-                    # D-Pad
-                    (ecodes.ABS_HAT0X, -1): "Left",
-                    (ecodes.ABS_HAT0X, 1): "Right",
-                    (ecodes.ABS_HAT0Y, -1): "Up",
-                    (ecodes.ABS_HAT0Y, 1): "Down",
-                    (ecodes.ABS_HAT1X, -1): "Left",
-                    (ecodes.ABS_HAT1X, 1): "Right",
-                    (ecodes.ABS_HAT1Y, -1): "Up",
-                    (ecodes.ABS_HAT1Y, 1): "Down",
-                    (ecodes.ABS_HAT2X, -1): "Left",
-                    (ecodes.ABS_HAT2X, 1): "Right",
-                    (ecodes.ABS_HAT2Y, -1): "Up",
-                    (ecodes.ABS_HAT2Y, 1): "Down",
-                    # joystick
-                    (ecodes.ABS_X, 1): "Right",
-                    (ecodes.ABS_X, -1): "Left",
-                    (ecodes.ABS_Y, 1): "Down",
-                    (ecodes.ABS_Y, -1): "Up",
-                    (ecodes.ABS_RX, 1): "Right",
-                    (ecodes.ABS_RX, -1): "Left",
-                    (ecodes.ABS_RY, 1): "Down",
-                    (ecodes.ABS_RY, -1): "Up",
-                    # wheel
-                    (ecodes.REL_WHEEL, -1): "Down",
-                    (ecodes.REL_WHEEL, 1): "Up",
-                    (ecodes.REL_HWHEEL, -1): "Left",
-                    (ecodes.REL_HWHEEL, 1): "Right",
-                }.get((event.code, event.value))
-                if direction is not None:
-                    key_name += f" {direction}"
-
-            key_name = key_name.replace("ABS_Z", "Trigger Left")
-            key_name = key_name.replace("ABS_RZ", "Trigger Right")
-
-            key_name = key_name.replace("ABS_HAT0X", "DPad")
-            key_name = key_name.replace("ABS_HAT0Y", "DPad")
-            key_name = key_name.replace("ABS_HAT1X", "DPad 2")
-            key_name = key_name.replace("ABS_HAT1Y", "DPad 2")
-            key_name = key_name.replace("ABS_HAT2X", "DPad 3")
-            key_name = key_name.replace("ABS_HAT2Y", "DPad 3")
-
-            key_name = key_name.replace("ABS_X", "Joystick")
-            key_name = key_name.replace("ABS_Y", "Joystick")
-            key_name = key_name.replace("ABS_RX", "Joystick 2")
-            key_name = key_name.replace("ABS_RY", "Joystick 2")
-
-            key_name = key_name.replace("BTN_", "Button ")
-            key_name = key_name.replace("KEY_", "")
-
-            key_name = key_name.replace("REL_", "")
-            key_name = key_name.replace("HWHEEL", "Wheel")
-            key_name = key_name.replace("WHEEL", "Wheel")
-
-            key_name = key_name.replace("_", " ")
-            key_name = key_name.replace("  ", " ")
-
-            result.append(key_name)
-
-        return " + ".join(result)
+        if self == EventCombination.empty_combination():
+            return "empty_combination"
+        return " + ".join(event.description(exclude_threshold=True) for event in self)

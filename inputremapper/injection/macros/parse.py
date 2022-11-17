@@ -46,6 +46,8 @@ FUNCTIONS = {
     "modify": Macro.add_modify,
     "repeat": Macro.add_repeat,
     "key": Macro.add_key,
+    "key_down": Macro.add_key_down,
+    "key_up": Macro.add_key_up,
     "event": Macro.add_event,
     "wait": Macro.add_wait,
     "hold": Macro.add_hold,
@@ -84,8 +86,9 @@ def use_safe_argument_names(keyword_args):
     # be used in macro code.
     built_ins = ["else", "type"]
 
+    keys = keyword_args.keys()
     for built_in in built_ins:
-        if keyword_args.get(built_in) is not None:
+        if built_in in keys:
             keyword_args[f"{built_in}_"] = keyword_args[built_in]
             del keyword_args[built_in]
 
@@ -227,7 +230,8 @@ def _parse_recurse(code, context, macro_instance=None, depth=0):
 
     code = code.strip()
 
-    if code == "":
+    if code == "" or code == "None":
+        # A function parameter probably
         return None
 
     if code.startswith('"'):
@@ -328,28 +332,20 @@ def _parse_recurse(code, context, macro_instance=None, depth=0):
 
 
 def handle_plus_syntax(macro):
-    """transform a + b + c to modify(a,modify(b,modify(c,hold())))"""
+    """transform a + b + c to hold_keys(a,b,c)"""
     if "+" not in macro:
         return macro
 
     if "(" in macro or ")" in macro:
-        raise ValueError(
-            f'Mixing "+" and macros is unsupported: "{ macro}"'
-        )  # TODO: MacroParsingError
+        # TODO: MacroParsingError
+        raise ValueError(f'Mixing "+" and macros is unsupported: "{ macro}"')
 
     chunks = [chunk.strip() for chunk in macro.split("+")]
-    output = ""
-    depth = 0
-    for chunk in chunks:
-        if chunk == "":
-            # invalid syntax
-            raise ValueError(f'Invalid syntax for "{macro}"')
 
-        depth += 1
-        output += f"modify({chunk},"
+    if "" in chunks:
+        raise ValueError(f'Invalid syntax for "{macro}"')
 
-    output += "hold()"
-    output += depth * ")"
+    output = f"hold_keys({','.join(chunks)})"
 
     logger.debug('Transformed "%s" to "%s"', macro, output)
     return output

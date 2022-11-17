@@ -324,9 +324,10 @@ class GuiTestBase(unittest.TestCase):
 
     def throttle(self):
         """Give GTK some time to process everything."""
-        # tests suddenly started to freeze my computer up completely
-        # and tests started to fail. By using this (and by optimizing some
-        # redundant calls in the gui) it worked again.
+        # tests suddenly started to freeze my computer up completely and tests started
+        # to fail. By using this (and by optimizing some redundant calls in the gui) it
+        # worked again. EDIT: Might have been caused by my broken/bloated ssd. I'll
+        # keep it in some places, since it did make the tests more reliable after all.
         for _ in range(10):
             gtk_iteration()
             time.sleep(0.002)
@@ -351,10 +352,7 @@ class GuiTestBase(unittest.TestCase):
 
         self.user_interface.window.set_focus(widget)
 
-        # for whatever miraculous reason it suddenly takes 0.005s before gtk does
-        # anything, even for old code.
-        time.sleep(0.02)
-        gtk_iteration()
+        self.throttle()
 
     def get_selection_labels(self):
         return self.selection_label_listbox.get_children()
@@ -407,8 +405,6 @@ class GuiTestBase(unittest.TestCase):
             "work" if expect_success else "fail",
         )
 
-        self.throttle()
-
         self.assertIsNone(reader.get_unreleased_keys())
 
         changed = active_preset.has_unsaved_changes()
@@ -430,8 +426,6 @@ class GuiTestBase(unittest.TestCase):
         # the recording toggle connects to focus events
         self.set_focus(self.toggle)
         self.toggle.set_active(True)
-        gtk_iteration()
-        gtk_iteration()
         self.assertIsNone(selection_label.get_combination())
         self.assertEqual(self.toggle.get_label(), "Press Key")
 
@@ -505,6 +499,7 @@ class GuiTestBase(unittest.TestCase):
         self.assertEqual(self.editor.get_symbol_input_text(), correct_case)
         self.assertFalse(active_preset.has_unsaved_changes())
 
+        # TODO I forgot what this is about. Maybe to trigger saving?
         self.set_focus(self.editor.get_text_input())
         self.set_focus(None)
 
@@ -1363,7 +1358,10 @@ class TestGui(GuiTestBase):
         warning_icon = self.user_interface.get("warning_status_icon")
 
         active_preset.change(
-            EventCombination([EV_KEY, 9, 1]), "keyboard", "k(1))", None
+            EventCombination([EV_KEY, 9, 1]),
+            "keyboard",
+            "k(1))",
+            None,
         )
         self.user_interface.save_preset()
         tooltip = status.get_tooltip_text().lower()
@@ -1382,6 +1380,37 @@ class TestGui(GuiTestBase):
             active_preset.get_mapping(EventCombination([EV_KEY, 9, 1])),
             ("k(1)", "keyboard"),
         )
+
+    def test_debounce_check_on_typing(self):
+        status = self.user_interface.get("status_bar")
+        status.set_tooltip_text(None)
+        error_icon = self.user_interface.get("error_status_icon")
+        warning_icon = self.user_interface.get("warning_status_icon")
+
+        self.add_mapping_via_ui(EventCombination([EV_KEY, 10, 1]), "")
+        gtk_iteration()
+        tooltip = status.get_tooltip_text()
+        # nothing wrong yet
+        self.assertIsNone(tooltip)
+
+        # now change the mapping by typing into the field
+        buffer = self.editor.get_text_input().get_buffer()
+        buffer.set_text("sdfgkj()")
+        self.throttle()
+        # debouncing, still nothing shown
+        tooltip = status.get_tooltip_text()
+        self.assertIsNone(tooltip)
+
+        # after 510 ms the debouncing should have been triggered a syntax check
+        time.sleep(0.51)
+        gtk_iteration()
+
+        tooltip = status.get_tooltip_text()
+        self.assertIn("Unknown function sdfgkj", tooltip)
+        self.assertTrue(error_icon.get_visible())
+        self.assertFalse(warning_icon.get_visible())
+
+        self.assertEqual(self.editor.get_symbol_input_text(), "sdfgkj()")
 
     def test_select_device_and_preset(self):
         foo_device_path = f"{CONFIG_PATH}/presets/Foo Device"

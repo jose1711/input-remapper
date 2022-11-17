@@ -14,7 +14,7 @@ First, select your device (like your keyboard) from the large dropdown on the to
 Then you can already edit your keys, as shown in the screenshots.
 
 In the text input field, type the key to which you would like to map this key.
-More information about the possible mappings can be found [below](#key-names-and-macros).
+More information about the possible mappings can be found in [examples.md](./examples.md) and [below](#key-names).
 
 Changes are saved automatically. Afterwards press the "Apply" button.
 
@@ -164,8 +164,8 @@ Here is an example configuration for preset "a" for the "gamepad" device:
         "keystroke_sleep_ms": 100
     },
     "mapping": {
-        "1,315,1+1,16,-1": "1",
-        "1,307,1": "k(2).k(3)"
+        "1,315,1+1,16,-1": ["1", "keyboard"],
+        "1,307,1": ["k(2).k(3)", "keyboard"]
     }
 }
 ```

@@ -77,11 +77,6 @@ def debug_key(self, key, msg, *args):
 
 logging.Logger.debug_key = debug_key
 
-LOG_PATH = (
-    "/var/log/input-remapper"
-    if os.access("/var/log", os.W_OK)
-    else f"{HOME}/.log/input-remapper"
-)
 
 logger = logging.getLogger("input-remapper")
 
@@ -218,7 +213,10 @@ EVDEV_VERSION = None
 try:
     VERSION = pkg_resources.require("input-remapper")[0].version
     EVDEV_VERSION = pkg_resources.require("evdev")[0].version
-except pkg_resources.DistributionNotFound as error:
+except Exception as error:
+    # there have been pkg_resources.DistributionNotFound and
+    # pkg_resources.ContextualVersionConflict errors so far.
+    # We can safely ignore all Exceptions here
     logger.info("Could not figure out the version")
     logger.debug(error)
 
@@ -266,29 +264,34 @@ def update_verbosity(debug):
         logger.setLevel(logging.INFO)
 
 
-def add_filehandler(log_path=LOG_PATH):
-    """Clear the existing logfile and start logging to it."""
+def trim_logfile(log_path):
+    """Keep the logfile short."""
+    if not os.path.exists(log_path):
+        return
+
+    file_size_mb = os.path.getsize(log_path) / 1000 / 1000
+    if file_size_mb > 100:
+        # something went terribly wrong here. The service might timeout because
+        # it takes too long to trim this file. delete it instead. This probably
+        # only happens when doing funny things while in debug mode.
+        logger.warning(
+            "Removing enormous log file of %dMB",
+            file_size_mb,
+        )
+        os.remove(log_path)
+        return
+
+    # the logfile should not be too long to avoid overflowing the storage
     try:
-        log_path = os.path.expanduser(log_path)
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "rb") as file:
+            binary = file.readlines()[-1000:]
+            content = [line.decode("utf-8", errors="ignore") for line in binary]
 
-        if os.path.isdir(log_path):
-            # used to be a folder < 0.8.0
-            shutil.rmtree(log_path)
-
-        if os.path.exists(log_path):
-            # the logfile should not be too long to avoid overflowing the storage
-            with open(log_path, "r") as file:
-                content = file.readlines()[-1000:]
-
-            with open(log_path, "w") as file:
-                file.truncate(0)
-                file.writelines(content)
-
-        file_handler = logging.FileHandler(log_path)
-        file_handler.setFormatter(ColorfulFormatter())
-        logger.addHandler(file_handler)
-
-        logger.info('Starting logging to "%s"', log_path)
+        with open(log_path, "w") as file:
+            file.truncate(0)
+            file.writelines(content)
     except PermissionError:
-        logger.debug('No permission to log to "%s"', log_path)
+        # let the outermost PermissionError handler handle it
+        raise
+    except Exception as e:
+        logger.error('Failed to trim logfile: "%s"', str(e))
